@@ -5,7 +5,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <utility>
-
+#include <c10/core/MemoryFormat.h>
 #include <torch/standalone/slim_tensor/storage.h>
 #include <torch/standalone/slim_tensor/utils.h>
 
@@ -97,8 +97,7 @@ class SlimTensor {
   }
 
   bool is_contiguous() const {
-    // bogus, always return true for now
-    return true;
+    return is_contiguous_;
   }
 
   SlimTensor as_strided_(
@@ -141,6 +140,120 @@ class SlimTensor {
   c10::ScalarType dtype_;
   int64_t storage_offset_;
   size_t numel_;
+  bool is_contiguous_ = true;
+
+  void refresh_numel() {
+    numel_ = torch::standalone::compute_numel(sizes_);
+  }
+
+  bool compute_is_contiguous() const {
+    if (dim() <= 1) {
+      return true;
+    }
+
+    int64_t expected_stride = 1;
+    for (int64_t i = dim() - 1; i >= 0; i--) {
+      if (size(i) == 0) {
+        return true;
+      }
+      if (size(i) != 1 && stride(i) != expected_stride) {
+        return false;
+      }
+      expected_stride *= size(i);
+    }
+    return true;
+  }
+
+  void refresh_contiguous() {
+    // In SlimTensor, we only care about the single is_contiguous_ flag.
+    // (because TensorImpl (aten) implementation has other stuff)
+    is_contiguous_ = compute_is_contiguous();
+  }
+
+  void set_sizes_and_strides(
+    const ArrayRef& new_sizes,
+    const ArrayRef& new_strides,
+    std::optional<int64_t> storage_offset = std::nullopt) {
+      const size_t new_dim = new_sizes.size();
+      TORCH_CHECK(new_dim == new_strides.size(),
+      "dimensionality of sizes (", new_dim,
+      ") must match dimensionality of strides (", new_strides.size(), ")");
+
+      // SlimTensor needs to own its sizes and strides arrays so
+      // we allocate new memory for them
+      auto* new_sizes_data = new int64_t[new_dim];
+      auto* new_strides_data = new int64_t[new_dim];
+      std::copy(new_sizes.begin(), new_sizes.end(), new_sizes_data);
+
+      // stride calculation logic
+      bool overflowed = false;
+      if (new_dim > 0) {
+        for (int64_t dim = new_dim - 1; dim >= 0; dim--) {
+          if (new_strides[dim] >= 0) {
+            new_strides_data[dim] = new_strides[dim];
+          } else {
+            // for negative strides
+            if (dim == new_dim - 1) {
+              new_strides_data[dim] = 1;
+            } else {
+              overflowed |= c10::mul_overflows(
+                new_strides_data[dim + 1],
+                std::max<int64_t>(new_sizes_data[dim + 1], 1),
+                &new_strides_data[dim]);
+            }
+          }
+        }
+      }
+      TORCH_CHECK(!overflowed, "Stride calculation overflowed");
+
+    sizes_ = ArrayRef(new_sizes_data, new_dim, /*owning=*/true);
+    strides_ = ArrayRef(new_strides_data, new_dim, /*owning=*/true);
+
+    if (storage_offset.has_value()) {
+      storage_offset_ = *storage_offset;
+    }
+
+    refresh_numel();
+    refresh_contiguous();
+
+  }
+
+  void set_sizes_contiguous(const ArrayRef& new_sizes) {
+    const auto new_dim = new_sizes.size();
+
+    auto* new_sizes_data = new int64_t[new_dim];
+    std::copy(new_sizes.begin(), new_sizes.end(), new_sizes_data);
+
+    sizes_ = ArrayRef(new_sizes_data, new_dim, /*owning=*/true);
+    refresh_numel();
+
+    this->empty_tensor_restride(c10::MemoryFormat::Contiguous);
+  }
+
+  void empty_tensor_restride(c10::MemoryFormat memory_format) {
+    TORCH_CHECK(memory_format == c10::MemoryFormat::Contiguous, "Only support MemoryFormat::Contiguous now");
+    switch (memory_format) {
+      case c10::MemoryFormat::Contiguous: {
+        const auto current_dim = this->dim();
+        auto* new_strides_data = new int64_t[current_dim];
+
+        if (current_dim > 0) {
+          const int64_t last_idx = current_dim - 1;
+          new_strides_data[last_idx] = 1;
+          for (int64_t i = last_idx - 1; i >= 0; i-- ) {
+            new_strides_data[i] = new_strides_data[i + 1] * this->size(i+1);
+          }
+        }
+
+        strides_ = ArrayRef(new_strides_data, current_dim, /*owning=*/true);
+        break;
+      }
+      // TODO: implement the other cases.
+    }
+
+    refresh_contiguous();
+  }
+
 };
 
 // The returned SlimTensor owns the underlying storage

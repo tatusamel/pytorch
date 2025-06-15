@@ -110,7 +110,7 @@ struct DeviceTraits<c10::DeviceType::CUDA> {
 class MaybeOwningStorage {
  public:
   MaybeOwningStorage(size_t nbytes, const c10::Device& device)
-      : device_(device) {
+      : device_(device), capacity_(nbytes), is_owning_(true) {
     // Allocating memory here so owning_ has to be true.
     if (device.is_cpu()) {
       data_ = DeviceTraits<c10::DeviceType::CPU>::allocate(nbytes);
@@ -124,7 +124,7 @@ class MaybeOwningStorage {
   }
 
   MaybeOwningStorage(void* data, const c10::Device& device)
-      : data_(data), device_(device), deleter_(noop) {
+      : data_(data), device_(device), deleter_(noop), capacity_(0), is_owning_(false) {
     // data pointer is not owned by this object
   }
 
@@ -186,10 +186,24 @@ class MaybeOwningStorage {
     deleter_ = noop;
   }
 
+  bool is_resizable() const {
+    return is_owning_;
+  }
+
+  void set_data_ptr(void* new_data) {
+    data_ = new_data;
+  }
+
+  void set_nbytes(size_t new_nbytes) {
+    capacity_ = new_nbytes;
+  }
+
  private:
   void* data_ = nullptr;
   c10::Device device_ = CPU_DEVICE;
   std::function<void(void*)> deleter_;
+  size_t capacity_ = 0;
+  bool is_owning_ = false;
 };
 
 using Storage = SharedPtr<MaybeOwningStorage>;
