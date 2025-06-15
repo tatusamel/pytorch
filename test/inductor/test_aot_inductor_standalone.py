@@ -80,6 +80,7 @@ def copy_tests(my_cls, other_cls, suffix, whitelist):  # noqa: B902
 test_list_cpu = {
     # Need to sort out third-party library build issues, e.g. blas, sleef
     "test_hann_window",
+    "test_resize_",
 }
 
 
