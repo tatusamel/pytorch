@@ -9,6 +9,7 @@
 #include <c10/core/MemoryFormat.h>
 #include <c10/core/impl/SizesAndStrides.h>
 #include <torch/csrc/inductor/aoti_standalone/utils.h>
+#include <c10/core/MemoryFormat.h>
 #include <torch/standalone/slim_tensor/storage.h>
 #include <torch/standalone/slim_tensor/utils.h>
 

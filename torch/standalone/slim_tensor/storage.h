@@ -124,7 +124,7 @@ class MaybeOwningStorage {
   }
 
   MaybeOwningStorage(void* data, const c10::Device& device)
-      : data_(data), device_(device), deleter_(noop) {
+      : data_(data), device_(device), deleter_(noop), capacity_(0), is_owning_(false) {
     // data pointer is not owned by this object
   }
 
@@ -189,6 +189,18 @@ class MaybeOwningStorage {
     // destroyed, the storage should NOT be freed.
     deleter_ = noop;
     is_owning_ = false;
+  }
+
+  bool is_resizable() const {
+    return is_owning_;
+  }
+
+  void set_data_ptr(void* new_data) {
+    data_ = new_data;
+  }
+
+  void set_nbytes(size_t new_nbytes) {
+    capacity_ = new_nbytes;
   }
 
   bool is_resizable() const {
