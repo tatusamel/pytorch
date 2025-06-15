@@ -224,6 +224,21 @@ class AOTInductorTestsTemplate:
 
         self.check_model(Model(), ())
 
+    def test_resize_(self):
+        class Model(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+
+            def forward(self, x):
+                y = x.clone()
+                torch.ops.aten.resize_.default(y, [20, 30])
+                return y
+
+        example_args = (torch.randn((3,200), dtype=torch.complex64),)
+        m = Model()
+        self.check_model(m, example_args)
+
+
     def test_small_constant(self):
         class Model(torch.nn.Module):
             def __init__(self) -> None:
