@@ -1,5 +1,8 @@
 #pragma once
 
+#include <c10/core/MemoryFormat.h>
+#include <torch/standalone/slim_tensor/storage.h>
+#include <torch/standalone/slim_tensor/utils.h>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
