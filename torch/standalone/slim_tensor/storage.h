@@ -124,7 +124,7 @@ class MaybeOwningStorage {
   }
 
   MaybeOwningStorage(void* data, const c10::Device& device)
-      : data_(data), device_(device), deleter_(noop), capacity_(0), is_owning_(false) {
+      : data_(data), device_(device), deleter_(noop) {
     // data pointer is not owned by this object
   }
 
