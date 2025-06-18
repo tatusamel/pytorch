@@ -1,8 +1,5 @@
 #pragma once
 
-#include <c10/core/MemoryFormat.h>
-#include <torch/standalone/slim_tensor/storage.h>
-#include <torch/standalone/slim_tensor/utils.h>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -12,7 +9,6 @@
 #include <c10/core/MemoryFormat.h>
 #include <c10/core/impl/SizesAndStrides.h>
 #include <torch/csrc/inductor/aoti_standalone/utils.h>
-#include <c10/core/MemoryFormat.h>
 #include <torch/standalone/slim_tensor/storage.h>
 #include <torch/standalone/slim_tensor/utils.h>
 
@@ -115,15 +111,9 @@ class SlimTensor {
       c10::IntArrayRef sizes,
       c10::IntArrayRef strides,
       std::optional<int64_t> storage_offset = std::nullopt) {
-<<<<<<< HEAD
     const int64_t new_dim = static_cast<int64_t>(sizes.size());
     TORCH_CHECK(
         new_dim == static_cast<int64_t>(strides.size()),
-=======
-    const int64_t new_dim = static_cast<int64_t>(new_sizes.size());
-    TORCH_CHECK(
-        new_dim == static_cast<int64_t>(new_strides.size()),
->>>>>>> 1ed5e4e19ca (fix compiler warnings as they might lead to infinite loop)
         "dimensionality of sizes (",
         new_dim,
         ") must match dimensionality of strides (",
@@ -137,13 +127,8 @@ class SlimTensor {
     bool overflowed = false;
     if (new_dim > 0) {
       for (int64_t dim = new_dim - 1; dim >= 0; dim--) {
-<<<<<<< HEAD
         if (strides[dim] >= 0) {
           new_strides[dim] = strides[dim];
-=======
-        if (new_strides[dim] >= 0) {
-          new_strides_data[dim] = new_strides[dim];
->>>>>>> 1ed5e4e19ca (fix compiler warnings as they might lead to infinite loop)
         } else {
           // for negative strides
           if (dim == new_dim - 1) {
