@@ -203,18 +203,6 @@ class MaybeOwningStorage {
     capacity_ = new_nbytes;
   }
 
-  bool is_resizable() const {
-    return is_owning_;
-  }
-
-  void set_data_ptr(void* new_data) {
-    data_ = new_data;
-  }
-
-  void set_nbytes(size_t new_nbytes) {
-    capacity_ = new_nbytes;
-  }
-
  private:
   void* data_ = nullptr;
   c10::Device device_ = CPU_DEVICE;
