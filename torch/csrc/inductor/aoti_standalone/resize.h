@@ -8,10 +8,17 @@
 namespace torch::standalone {
 
 inline const SlimTensor& resize_(
-    const SlimTensor& self,
-    ArrayRef size,
-    std::optional<c10::MemoryFormat> optional_memory_format) {
-  return _resize_<SlimTensor, ArrayRef>(self, size, optional_memory_format);
+    AtenTensorHandle self,
+    const int64_t* size,
+    int64_t size_len_,
+    int32_t* memory_format) {
+  SlimTensor* tensor = reinterpret_cast<SlimTensor*>(self);
+  ArrayRef size_ref(size, size_len_);
+  std::optional<c10::MemoryFormat> optional_memory_format;
+  if (memory_format) {
+    optional_memory_format = static_cast<c10::MemoryFormat>(*memory_format);
+  }
+  return _resize_(*tensor, size_ref, optional_memory_format);
 }
 
 } // namespace torch::standalone
