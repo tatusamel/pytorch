@@ -5,11 +5,7 @@
 namespace torch::standalone {
 
 template <typename T>
-<<<<<<< HEAD
 inline void _maybe_resize_storage(T* self, int64_t new_size_bytes) {
-=======
-inline void _maybe_resize_storage_cpu(T* self, int64_t new_size_bytes) {
->>>>>>> 765406c8a11 (implement resize)
   if (self->numel() == 0) {
     return;
   }
@@ -35,12 +31,17 @@ inline T* _resize_impl_(
   }
 }
 
-template <typename T, typename AREF>
+template <typename T>
 inline T* _resize_impl_(
     T* self,
+<<<<<<< HEAD
     AREF size,
     std::optional<AREF> stride,
 >>>>>>> 765406c8a11 (implement resize)
+=======
+    c10::IntArrayRef size,
+    std::optional<c10::IntArrayRef> stride,
+>>>>>>> 813f16ac293 (fix conflict after rebase)
     bool resize_storage) {
   if (self->sizes() == size && (!stride || self->strides() == stride.value())) {
     return self;
@@ -72,6 +73,7 @@ inline T* _resize_impl_(
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 template <typename T>
 inline const T& _resize_(
     const T& self,
@@ -81,22 +83,33 @@ inline const T& _resize_(
   _resize_impl_<T>(self_, size, /*stride=*/std::nullopt, true);
 =======
 template <typename T, typename AREF>
+=======
+template <typename T>
+>>>>>>> 813f16ac293 (fix conflict after rebase)
 inline const T& _resize_(
     const T& self,
-    AREF size,
+    c10::IntArrayRef size,
     std::optional<c10::MemoryFormat> optional_memory_format) {
   T* self_ = const_cast<T*>(&self);
+<<<<<<< HEAD
   _resize_impl_<T, AREF>(self_, size, /*stride=*/std::nullopt, true);
 >>>>>>> 765406c8a11 (implement resize)
+=======
+  _resize_impl_<T>(self_, size, /*stride=*/std::nullopt, true);
+>>>>>>> 813f16ac293 (fix conflict after rebase)
 
   if (optional_memory_format.has_value()) {
     c10::MemoryFormat memory_format =
         static_cast<c10::MemoryFormat>(optional_memory_format.value());
 <<<<<<< HEAD
+<<<<<<< HEAD
     TORCH_CHECK(
 =======
     AOTI_TORCH_CHECK(
 >>>>>>> 765406c8a11 (implement resize)
+=======
+    TORCH_CHECK(
+>>>>>>> 813f16ac293 (fix conflict after rebase)
         memory_format != c10::MemoryFormat::Preserve,
         "Unsupported memory format",
         memory_format);
