@@ -1,9 +1,9 @@
 #pragma once
 
+#include <c10/core/Scalar.h>
 #include <torch/csrc/inductor/aoti_standalone/factory.h>
 #include <torch/standalone/slim_tensor/utils.h>
 #include <torch/standalone/util/Factory.h>
-
 
 namespace torch::standalone {
 
@@ -50,18 +50,16 @@ inline void fill_scalar(T& tensor, const c10::Scalar& value) {
 
 template <class T, class AREF>
 T scalar_tensor_template(
-  const c10::Scalar& s,
-  c10::ScalarType dtype,
-  c10::Device device) {
-
+    const c10::Scalar& s,
+    c10::ScalarType dtype,
+    c10::Device device) {
   AREF sizes = {};
   AREF strides = {};
 
-  T result = empty_tensor<T, AREF>(sizes, strides, dtype, device);
+  T result = empty_tensor<T, AREF>(sizes, strides, dtype, device, 0);
 
   fill_scalar(result, s);
   return result;
-
 }
 
 } // namespace torch::standalone
