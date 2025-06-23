@@ -3,6 +3,7 @@
 
 #include <torch/csrc/inductor/aoti_standalone/c/shim.h>
 #include <torch/csrc/inductor/aoti_standalone/cpu/scalar_tensor.h>
+#include <torch/csrc/inductor/aoti_standalone/cuda/scalar_tensor.h>
 #include <torch/standalone/slim_tensor/slim_tensor.h>
 #include <torch/torch.h>
 #include <cstdint>
@@ -93,7 +94,7 @@ TEST(ScalarTensorTest, ScalarTensorOpBoolTrue) {
   auto dtype = static_cast<int32_t>(options.dtype().toScalarType());
   auto device = static_cast<int32_t>(options.device().type());
 
-  AOTITorchError err = aoti_torch_cpu_scalar_tensor(
+  AOTITorchError err = aoti_torch_cuda_scalar_tensor(
       scalar_value, &dtype, nullptr, &device, 0, nullptr, &slim_tensor_handle);
 
   ASSERT_EQ(err, AOTI_TORCH_SUCCESS);
@@ -120,7 +121,7 @@ TEST(ScalarTensorTest, ScalarTensorOpBoolFalse) {
   auto dtype = static_cast<int32_t>(options.dtype().toScalarType());
   auto device = static_cast<int32_t>(options.device().type());
 
-  AOTITorchError err = aoti_torch_cpu_scalar_tensor(
+  AOTITorchError err = aoti_torch_cuda_scalar_tensor(
       scalar_value, &dtype, nullptr, &device, 0, nullptr, &slim_tensor_handle);
 
   ASSERT_EQ(err, AOTI_TORCH_SUCCESS);

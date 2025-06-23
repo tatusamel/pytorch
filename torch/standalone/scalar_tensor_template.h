@@ -8,7 +8,7 @@
 namespace torch::standalone {
 
 template <typename T>
-inline void fill_scalar(T& tensor, const c10::Scalar& value) {
+inline void scalar_fill(T& tensor, const c10::Scalar& value) {
   if (tensor.numel() != 1) {
     TORCH_CHECK(false, "fill_scalar is only for tensors with 1 element");
   }
@@ -44,7 +44,7 @@ inline void fill_scalar(T& tensor, const c10::Scalar& value) {
       fill_value(value.to<bool>());
       break;
     default:
-      TORCH_CHECK(false, "Unsupported dtype in fill_scalar");
+      TORCH_CHECK(false, "scalar_fill: Unsupported dtype");
   }
 }
 
@@ -58,7 +58,7 @@ T scalar_tensor_template(
 
   T result = empty_tensor<T, AREF>(sizes, strides, dtype, device, 0);
 
-  fill_scalar(result, s);
+  scalar_fill(result, s);
   return result;
 }
 
