@@ -1,11 +1,10 @@
 #pragma once
 
-#include <vector>
-#include <algorithm>
 #include <torch/csrc/inductor/aoti_standalone/utils.h>
+#include <algorithm>
+#include <vector>
 
 namespace torch::standalone {
-
 
 template <typename T>
 inline T transpose_template(const T& self, int64_t dim0, int64_t dim1) {
@@ -20,7 +19,8 @@ inline T transpose_template(const T& self, int64_t dim0, int64_t dim1) {
   }
 
   std::vector<int64_t> new_sizes(self.sizes().begin(), self.sizes().end());
-  std::vector<int64_t> new_strides(self.strides().begin(), self.strides().end());
+  std::vector<int64_t> new_strides(
+      self.strides().begin(), self.strides().end());
 
   // swap the metadata
   std::swap(new_sizes[dim0], new_sizes[dim1]);
@@ -30,13 +30,10 @@ inline T transpose_template(const T& self, int64_t dim0, int64_t dim1) {
   // It shares the new storage but has the new sizes and strides
   T result = self;
   result.as_strided_(
-    c10::IntArrayRef(new_sizes),
-    c10::IntArrayRef(new_strides),
-    self.storage_offset()
-  );
+      c10::IntArrayRef(new_sizes),
+      c10::IntArrayRef(new_strides),
+      self.storage_offset());
   return result;
-
 }
-
 
 } // namespace torch::standalone
