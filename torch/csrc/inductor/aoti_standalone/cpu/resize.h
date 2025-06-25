@@ -12,37 +12,14 @@ AOTITorchError aoti_torch_cpu_resize_(
     const int64_t* size,
     int64_t size_len_,
     int32_t* memory_format) {
-<<<<<<< HEAD
-<<<<<<< HEAD
   torch::standalone::SlimTensor* tensor =
       reinterpret_cast<torch::standalone::SlimTensor*>(self);
-=======
-  SlimTensor* tensor = reinterpret_cast<SlimTensor*>(self);
->>>>>>> 813f16ac293 (fix conflict after rebase)
   c10::IntArrayRef size_ref(size, size_len_);
   std::optional<c10::MemoryFormat> optional_memory_format;
   if (memory_format) {
     optional_memory_format = static_cast<c10::MemoryFormat>(*memory_format);
-<<<<<<< HEAD
-=======
-  try {
-    SlimTensor* tensor = reinterpret_cast<SlimTensor*>(self);
-    ArrayRef size_ref(size, size_len_);
-    std::optional<c10::MemoryFormat> optional_memory_format;
-    if (memory_format) {
-      optional_memory_format = static_cast<c10::MemoryFormat>(*memory_format);
-    }
-    _resize_(*tensor, size_ref, optional_memory_format);
-    return AOTI_TORCH_SUCCESS;
-  } catch (const std::exception& e) {
-    return AOTI_TORCH_FAILURE;
->>>>>>> 8089a961245 (change structure of resize headers)
   }
   torch::standalone::_resize_(*tensor, size_ref, optional_memory_format);
-=======
-  }
-  _resize_(*tensor, size_ref, optional_memory_format);
->>>>>>> 813f16ac293 (fix conflict after rebase)
   return AOTI_TORCH_SUCCESS;
 }
 
