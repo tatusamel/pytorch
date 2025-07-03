@@ -119,10 +119,6 @@ inline std::vector<int64_t> safe_compute_contiguous_strides(
   }
   return strides;
 }
-<<<<<<< HEAD
-=======
-
->>>>>>> 7ab6e5f0f99 (implement pad)
 #endif
 
 inline size_t compute_numel(c10::IntArrayRef sizes) {
