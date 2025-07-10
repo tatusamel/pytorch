@@ -39,17 +39,18 @@
 #include <namespace_config.h>
 #include <static_switch.h>
 #include <ATen/native/transformers/cuda/flash_attn/flash_api.h>
-
+#include <ATen/native/transformers/cuda/flash_attn/tensor_traits.h>
 
 #include <c10/util/Exception.h>
 
 namespace FLASH_NAMESPACE {
 
 #define CHECK_DEVICE(x) TORCH_CHECK(x.is_cuda(), #x " must be on CUDA")
-#define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == at::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
+#define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == c10::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 
 
+template<typename TensorType>
 void set_params_fprop(Flash_fwd_params &params,
                       // sizes
                       const size_t b,
@@ -62,10 +63,10 @@ void set_params_fprop(Flash_fwd_params &params,
                       const size_t d,
                       const size_t d_rounded,
                       // device pointers
-                      const at::Tensor q,
-                      const at::Tensor k,
-                      const at::Tensor v,
-                      at::Tensor out,
+                      const TensorType& q,
+                      const TensorType& k,
+                      const TensorType& v,
+                      TensorType& out,
                       void *cu_seqlens_q_d,
                       void *cu_seqlens_k_d,
                       void *seqused_k,
@@ -82,7 +83,7 @@ void set_params_fprop(Flash_fwd_params &params,
     // Reset the parameters
     params = {};
 
-    params.is_bf16 = q.dtype() == at::kBFloat16;
+    params.is_bf16 = q.dtype() == c10::kBFloat16;
 
     // Set the pointers and strides.
     params.q_ptr = q.data_ptr();
@@ -184,6 +185,8 @@ void set_params_fprop(Flash_fwd_params &params,
     params.seqlenq_ngroups_swapped = seqlenq_ngroups_swapped;
 }
 
+
+template<typename TensorType>
 void set_params_dgrad(Flash_bwd_params &params,
                       // sizes
                       const size_t b,
@@ -196,14 +199,14 @@ void set_params_dgrad(Flash_bwd_params &params,
                       const size_t d,
                       const size_t d_rounded,
                       // device pointers
-                      const at::Tensor q,
-                      const at::Tensor k,
-                      const at::Tensor v,
-                      const at::Tensor out,
-                      const at::Tensor dout,
-                      at::Tensor dq,
-                      at::Tensor dk,
-                      at::Tensor dv,
+                      const TensorType& q,
+                      const TensorType& k,
+                      const TensorType& v,
+                      const TensorType& out,
+                      const TensorType& dout,
+                      TensorType& dq,
+                      TensorType& dk,
+                      TensorType& dv,
                       void *cu_seqlens_q_d,
                       void *cu_seqlens_k_d,
                       void *dq_accum_d,
@@ -219,21 +222,21 @@ void set_params_dgrad(Flash_bwd_params &params,
                       bool deterministic,
                       const bool unpadded_lse) {
 
-    set_params_fprop(params,
-                     b, seqlen_q, seqlen_k, seqlen_q_rounded, seqlen_k_rounded, h, h_k, d, d_rounded,
-                     q, k, v, out,
-                     cu_seqlens_q_d,
-                     cu_seqlens_k_d,
-                     nullptr,
-                     nullptr,
-                     softmax_lse_d,
-                     p_dropout,
-                     softmax_scale,
-                     window_size_left,
-                     window_size_right,
-                     softcap,
-                     false, // seqlenq_ngroups_swapped
-                     unpadded_lse);
+    set_params_fprop<TensorType>(params,
+                                 b, seqlen_q, seqlen_k, seqlen_q_rounded, seqlen_k_rounded, h, h_k, d, d_rounded,
+                                 q, k, v, const_cast<TensorType&>(out),
+                                 cu_seqlens_q_d,
+                                 cu_seqlens_k_d,
+                                 nullptr,
+                                 nullptr,
+                                 softmax_lse_d,
+                                 p_dropout,
+                                 softmax_scale,
+                                 window_size_left,
+                                 window_size_right,
+                                 softcap,
+                                 false, // seqlenq_ngroups_swapped
+                                 unpadded_lse);
 
     // Set the pointers and strides.
     params.do_ptr = dout.data_ptr();
@@ -265,6 +268,7 @@ void set_params_dgrad(Flash_bwd_params &params,
 
     params.deterministic = deterministic;
 }
+
 
 void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split_kernel=false) {
     FP16_SWITCH(!params.is_bf16, [&] {
@@ -321,7 +325,9 @@ inline int num_splits_heuristic(int batch_nheads_mblocks, int num_SMs, int num_n
     }
     return 1;
 }
-std::tuple<at::Tensor, at::Tensor> set_params_splitkv(Flash_fwd_params &params, const int batch_size,
+
+template<typename TensorType>
+std::tuple<TensorType, TensorType> set_params_splitkv(Flash_fwd_params &params, const int batch_size,
     const int num_heads, const int head_size, const int max_seqlen_k, const int max_seqlen_q,
     const int head_size_rounded, const float p_dropout,
     const int num_splits, cudaDeviceProp *dprops, struct c10::TensorOptions opts) {
@@ -333,8 +339,8 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(Flash_fwd_params &params, 
     // In any case we don't expect seqlen_q to be larger than 64 for inference.
     const int num_m_blocks = (max_seqlen_q + 64 - 1) / 64;
     params.num_splits = num_splits;
-    at::Tensor softmax_lse_accum;
-    at::Tensor out_accum;
+    TensorType softmax_lse_accum;
+    TensorType out_accum;
 
     if (p_dropout == 0.0f) {  // SplitKV is not implemented for dropout
         if (num_splits < 1) {
@@ -342,8 +348,8 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(Flash_fwd_params &params, 
             params.num_splits = num_splits_heuristic(batch_size * num_heads * num_m_blocks, dprops->multiProcessorCount * 2, num_n_blocks, 128);
         }
         if (params.num_splits > 1) {
-            softmax_lse_accum = at::empty({params.num_splits, batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
-            out_accum = at::empty({params.num_splits, batch_size, num_heads, max_seqlen_q, head_size_rounded}, opts.dtype(at::kFloat));
+            softmax_lse_accum = TensorTraits<TensorType>::empty({params.num_splits, batch_size, num_heads, max_seqlen_q}, opts.dtype(c10::kFloat));
+            out_accum = TensorTraits<TensorType>::empty({params.num_splits, batch_size, num_heads, max_seqlen_q, head_size_rounded}, opts.dtype(c10::kFloat));
             params.softmax_lseaccum_ptr = softmax_lse_accum.data_ptr();
             params.oaccum_ptr = out_accum.data_ptr();
         }
@@ -353,17 +359,18 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(Flash_fwd_params &params, 
     return std::make_tuple(softmax_lse_accum, out_accum);
 }
 
-void set_params_alibi(Flash_fwd_params &params, std::optional<at::Tensor> &alibi_slopes_, int batch_size, int num_heads){
+template<typename TensorType>
+void set_params_alibi(Flash_fwd_params &params, std::optional<TensorType> &alibi_slopes_, int batch_size, int num_heads){
 #ifdef FLASHATTENTION_DISABLE_ALIBI
     TORCH_CHECK(!alibi_slopes_.has_value(), "This flash attention build does not support alibi.");
     params.alibi_slopes_ptr = nullptr;
 #else
     if (alibi_slopes_.has_value()) {
         auto alibi_slopes = alibi_slopes_.value();
-        TORCH_CHECK(alibi_slopes.dtype() == at::kFloat, "ALiBi slopes must have dtype fp32");
+        TORCH_CHECK(alibi_slopes.dtype() == c10::kFloat, "ALiBi slopes must have dtype fp32");
         CHECK_DEVICE(alibi_slopes);
         TORCH_CHECK(alibi_slopes.stride(-1) == 1, "ALiBi slopes tensor must have contiguous last dimension");
-        TORCH_CHECK(alibi_slopes.sizes() == at::IntArrayRef({num_heads}) || alibi_slopes.sizes() == at::IntArrayRef({batch_size, num_heads}));
+        TORCH_CHECK(alibi_slopes.sizes() == c10::IntArrayRef({num_heads}) || alibi_slopes.sizes() == c10::IntArrayRef({batch_size, num_heads}));
         params.alibi_slopes_ptr = alibi_slopes.data_ptr();
         params.alibi_slopes_batch_stride = alibi_slopes.dim() == 2 ? alibi_slopes.stride(0) : 0;
     } else {
@@ -372,13 +379,13 @@ void set_params_alibi(Flash_fwd_params &params, std::optional<at::Tensor> &alibi
 #endif
 }
 
-// return {out, q_padded, k_padded, v_padded, out_padded, softmax_lse, p};
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
-mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
-        const at::Tensor &k,         // batch_size x seqlen_k x num_heads_k x head_size
-        const at::Tensor &v,         // batch_size x seqlen_k x num_heads_k x head_size
-        std::optional<at::Tensor> &out_,             // batch_size x seqlen_q x num_heads x head_size
-        std::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
+template<typename TensorType>
+std::tuple<TensorType, TensorType, TensorType, TensorType, TensorType, TensorType, TensorType, TensorType>
+mha_fwd_impl(const TensorType &q,         // batch_size x seqlen_q x num_heads x head_size
+        const TensorType &k,         // batch_size x seqlen_k x num_heads_k x head_size
+        const TensorType &v,         // batch_size x seqlen_k x num_heads_k x head_size
+        std::optional<TensorType> &out_,             // batch_size x seqlen_q x num_heads x head_size
+        std::optional<TensorType> &alibi_slopes_, // num_heads or batch_size x num_heads
         const float p_dropout,
         const float softmax_scale,
         bool is_causal,
@@ -388,7 +395,8 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
         const bool return_softmax,
         std::optional<at::Generator> gen_) {
 
-    auto dprops = at::cuda::getCurrentDeviceProperties();
+    using Traits = TensorTraits<TensorType>;
+    auto dprops = Traits::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
@@ -399,9 +407,9 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
     // TORCH_CHECK(is_sm90 || is_sm8x || is_sm75, "FlashAttention only supports Turing GPUs or newer.");
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
+    TORCH_CHECK(q_dtype == c10::kHalf || q_dtype == c10::kBFloat16,
                 "FlashAttention only support fp16 and bf16 data type");
-    if (q_dtype == at::kBFloat16) {
+    if (q_dtype == c10::kBFloat16) {
         TORCH_CHECK(is_sm120_or_sm121 || is_sm10x || is_sm90 || is_sm8x, "bfloat16 is only supported on Ampere GPUs or newer");
     }
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
@@ -439,7 +447,7 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
     // H/t Daniel Haziza
     const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && p_dropout == 0.f && head_size_og % 8 == 0 && !alibi_slopes_.has_value();
     const int ngroups = num_heads / num_heads_k;
-    at::Tensor temp_q = q;
+    TensorType temp_q = q;
     if (seqlenq_ngroups_swapped) {
         temp_q = q.reshape({batch_size, num_heads_k, ngroups, head_size_og}).transpose(1, 2);
         seqlen_q = ngroups;
@@ -450,12 +458,12 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size_og);
     CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size_og);
 
-    at::Tensor q_padded, k_padded, v_padded;
+    TensorType q_padded, k_padded, v_padded;
     q_padded = temp_q;
     k_padded = k;
     v_padded = v;
 
-    at::Tensor out;
+    TensorType out;
     if (out_.has_value()) {
         out = out_.value();
         TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
@@ -466,9 +474,9 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
             out = out.reshape({batch_size, num_heads_k, ngroups, head_size_og}).transpose(1, 2);
         }
         CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_og);
-        if (head_size_og % 8 != 0) { out = at::empty_like(q_padded); }
+        if (head_size_og % 8 != 0) { out = Traits::empty_like(q_padded); }
     } else {
-        out = at::empty_like(q_padded);
+        out = Traits::empty_like(q_padded);
     }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
@@ -479,48 +487,48 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
+    c10::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
 
     auto opts = q.options();
 
-    auto softmax_lse = at::empty({batch_size, num_heads, seqlen_q }, opts.dtype(at::kFloat));
+    auto softmax_lse = Traits::empty({batch_size, num_heads, seqlen_q }, opts.dtype(c10::kFloat));
 
-    at::Tensor p;
+    TensorType p;
     // Only return softmax if there's dropout to reduce compilation time
     if (return_softmax) {
         TORCH_CHECK(p_dropout > 0.0f, "return_softmax is only supported when p_dropout > 0.0");
-        p = at::empty({ batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded }, opts);
+        p = Traits::empty({ batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded }, opts);
     }
 
     Flash_fwd_params params;
-    set_params_fprop(params,
-                     batch_size,
-                     seqlen_q, seqlen_k,
-                     seqlen_q_rounded, seqlen_k_rounded,
-                     num_heads, num_heads_k,
-                     head_size, head_size_rounded,
-                     q_padded, k_padded, v_padded, out,
-                     /*cu_seqlens_q_d=*/nullptr,
-                     /*cu_seqlens_k_d=*/nullptr,
-                     /*seqused_k=*/nullptr,
-                     return_softmax ? p.data_ptr() : nullptr,
-                     softmax_lse.data_ptr(),
-                     p_dropout,
-                     softmax_scale,
-                     window_size_left,
-                     window_size_right,
-                     softcap
-                     );
+    set_params_fprop<TensorType>(params,
+                                 batch_size,
+                                 seqlen_q, seqlen_k,
+                                 seqlen_q_rounded, seqlen_k_rounded,
+                                 num_heads, num_heads_k,
+                                 head_size, head_size_rounded,
+                                 q_padded, k_padded, v_padded, out,
+                                 /*cu_seqlens_q_d=*/nullptr,
+                                 /*cu_seqlens_k_d=*/nullptr,
+                                 /*seqused_k=*/nullptr,
+                                 return_softmax ? p.data_ptr() : nullptr,
+                                 softmax_lse.data_ptr(),
+                                 p_dropout,
+                                 softmax_scale,
+                                 window_size_left,
+                                 window_size_right,
+                                 softcap
+                                 );
 
 
     // Keep references to these tensors to extend their lifetime
-    auto [softmax_lse_accum, out_accum] = set_params_splitkv(params, batch_size, num_heads,
+    auto [softmax_lse_accum, out_accum] = set_params_splitkv<TensorType>(params, batch_size, num_heads,
                         head_size, seqlen_k, seqlen_q,
                         head_size_rounded, p_dropout, /*num_splits*/0, dprops, opts);
 
     // See [Note] BC breaking change to flash seed/offset
-    auto rng_state = at::empty({2}, at::dtype(c10::kUInt64).device(at::kCUDA));
-    auto _unused = at::empty({}, at::dtype(c10::kUInt64).device(at::kCUDA));
+    auto rng_state = Traits::empty({2}, c10::TensorOptions().dtype(c10::kUInt64).device(c10::kCUDA));
+    auto _unused = Traits::empty({}, c10::TensorOptions().dtype(c10::kUInt64).device(c10::kCUDA));
     if (p_dropout > 0.0)  {
         auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(std::nullopt, at::cuda::detail::getDefaultCUDAGenerator());
         // number of times random will be generated per thread, to offset philox counter in thc random
@@ -530,15 +538,15 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
         // See Note [Acquire lock when using random generators]
         std::lock_guard<std::mutex> lock(gen->mutex_);
         at::PhiloxCudaState philox_state = gen->philox_cuda_state(counter_offset);
-        rng_state = at::empty({2}, at::TensorOptions().dtype(c10::kUInt64).device(at::kCUDA));
+        rng_state = Traits::empty({2}, c10::TensorOptions().dtype(c10::kUInt64).device(c10::kCUDA));
         params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
         params.philox_args = philox_state;
     }
 
-    set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
+    set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
     if (seqlen_k > 0) {
-        auto stream = at::cuda::getCurrentCUDAStream().stream();
+        auto stream = c10::cuda::getCurrentCUDAStream().stream();
         run_mha_fwd(params, stream);
     } else {
         // If seqlen_k == 0, then we have an empty tensor. We need to set the output to 0.
@@ -548,22 +556,44 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
 
     if (seqlenq_ngroups_swapped) {
         out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_og});
-        q_padded = q_padded.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_og});
-        softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
-    }
+q_padded = q_padded.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_og});
+softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
+  }
     return {out, q_padded, k_padded, v_padded, softmax_lse, rng_state, _unused, p};
 }
 
+// Non-template wrapper for backward compatibility
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
-mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-               const at::Tensor &k,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-               const at::Tensor &v,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-               std::optional<at::Tensor> &out_, // total_q x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
-               const at::Tensor &cu_seqlens_q,  // b+1
-               const at::Tensor &cu_seqlens_k,  // b+1
-               std::optional<at::Tensor> &seqused_k, // b. If given, only this many elements of each batch element's keys are used.
-               std::optional<at::Tensor> &block_table_, // batch_size x max_num_blocks_per_seq
-               std::optional<at::Tensor> &alibi_slopes_, // num_heads or b x num_heads
+mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
+        const at::Tensor &k,         // batch_size x seqlen_k x num_heads_k x head_size
+        const at::Tensor &v,         // batch_size x seqlen_k x num_heads_k x head_size
+        std::optional<at::Tensor> &out_,             // batch_size x seqlen_q x num_heads x head_size
+        std::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
+        const float p_dropout,
+        const float softmax_scale,
+        bool is_causal,
+        int window_size_left,
+        int window_size_right,
+        const float softcap,
+        const bool return_softmax,
+        std::optional<at::Generator> gen_) {
+
+    return mha_fwd_impl<at::Tensor>(q, k, v, out_, alibi_slopes_, p_dropout, softmax_scale,
+                                    is_causal, window_size_left, window_size_right, softcap,
+                                    return_softmax, gen_);
+}
+
+template<typename TensorType>
+std::tuple<TensorType, TensorType, TensorType, TensorType, TensorType, TensorType, TensorType, TensorType>
+mha_varlen_fwd_impl(const TensorType &q,  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+               const TensorType &k,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+               const TensorType &v,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+               std::optional<TensorType> &out_, // total_q x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
+               const TensorType &cu_seqlens_q,  // b+1
+               const TensorType &cu_seqlens_k,  // b+1
+               std::optional<TensorType> &seqused_k, // b. If given, only this many elements of each batch element's keys are used.
+               std::optional<TensorType> &block_table_, // batch_size x max_num_blocks_per_seq
+               std::optional<TensorType> &alibi_slopes_, // num_heads or b x num_heads
                int max_seqlen_q,
                const int max_seqlen_k,
                const float p_dropout,
@@ -576,7 +606,8 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
                const bool return_softmax,
                std::optional<at::Generator> gen_) {
 
-    auto dprops = at::cuda::getCurrentDeviceProperties();
+    using Traits = TensorTraits<TensorType>;
+    auto dprops = Traits::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
@@ -587,26 +618,26 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
     // TORCH_CHECK(is_sm90 || is_sm8x || is_sm75, "FlashAttention only supports Turing GPUs or newer.");
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
+    TORCH_CHECK(q_dtype == c10::kHalf || q_dtype == c10::kBFloat16,
                 "FlashAttention only support fp16 and bf16 data type");
-    if (q_dtype == at::kBFloat16) {
+    if (q_dtype == c10::kBFloat16) {
         TORCH_CHECK(is_sm120_or_sm121 || is_sm10x || is_sm90 || is_sm8x, "bfloat16 is only supported on Ampere GPUs or newer");
     }
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(cu_seqlens_q.dtype() == at::kInt, "cu_seqlens_q must have dtype int32");
-    TORCH_CHECK(cu_seqlens_k.dtype() == at::kInt, "cu_seqlens_k must have dtype int32");
+    TORCH_CHECK(cu_seqlens_q.dtype() == c10::kInt, "cu_seqlens_q must have dtype int32");
+    TORCH_CHECK(cu_seqlens_k.dtype() == c10::kInt, "cu_seqlens_k must have dtype int32");
 
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
     CHECK_DEVICE(cu_seqlens_q);
     CHECK_DEVICE(cu_seqlens_k);
 
-    at::Tensor block_table;
+    TensorType block_table;
     const bool paged_KV = block_table_.has_value();
     if (paged_KV) {
         block_table = block_table_.value();
         CHECK_DEVICE(block_table);
-        TORCH_CHECK(block_table.dtype() == at::kInt, "block_table must have dtype torch.int32");
+        TORCH_CHECK(block_table.dtype() == c10::kInt, "block_table must have dtype torch.int32");
         TORCH_CHECK(block_table.stride(-1) == 1, "block_table must have contiguous last dimension");
     }
 
@@ -638,7 +669,7 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
     // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
     // H/t Daniel Haziza
     const int seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && p_dropout == 0.f && head_size_og % 8 == 0 && !alibi_slopes_.has_value();
-    at::Tensor temp_q = q;
+    TensorType temp_q = q;
     const int ngroups = num_heads / num_heads_k;
     if (seqlenq_ngroups_swapped) {
         temp_q = q.reshape({batch_size, num_heads_k, ngroups, head_size_og}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size_og});
@@ -671,18 +702,18 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
     CHECK_SHAPE(cu_seqlens_k, batch_size + 1);
     if (seqused_k.has_value()){
         auto seqused_k_ = seqused_k.value();
-        TORCH_CHECK(seqused_k_.dtype() == at::kInt, "seqused_k must have dtype int32");
+        TORCH_CHECK(seqused_k_.dtype() == c10::kInt, "seqused_k must have dtype int32");
         TORCH_CHECK(seqused_k_.is_cuda(), "seqused_k must be on CUDA device");
         TORCH_CHECK(seqused_k_.is_contiguous(), "seqused_k must be contiguous");
         CHECK_SHAPE(seqused_k_, batch_size);
     }
 
-    at::Tensor q_padded, k_padded, v_padded;
+    TensorType q_padded, k_padded, v_padded;
     q_padded = temp_q;
     k_padded = k;
     v_padded = v;
 
-    at::Tensor out;
+    TensorType out;
     if (out_.has_value()) {
         out = out_.value();
         TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
@@ -692,9 +723,9 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
         if (seqlenq_ngroups_swapped) {
             out = out.reshape({batch_size, num_heads_k, ngroups, head_size_og}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size_og});
         }
-        if (head_size_og % 8 != 0) { out = at::empty_like(q_padded); }
+        if (head_size_og % 8 != 0) { out = Traits::empty_like(q_padded); }
     } else {
-        out = at::empty_like(q_padded);
+        out = Traits::empty_like(q_padded);
     }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
@@ -705,16 +736,16 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
+    c10::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
 
     auto opts = q.options();
 
-    auto softmax_lse = at::empty({num_heads, total_q}, opts.dtype(at::kFloat));
-    at::Tensor p;
+    auto softmax_lse = Traits::empty({num_heads, total_q}, opts.dtype(c10::kFloat));
+    TensorType p;
     // Only return softmax if there's dropout to reduce compilation time
     if (return_softmax) {
         TORCH_CHECK(p_dropout > 0.0f, "return_softmax is only supported when p_dropout > 0.0");
-        p = at::empty({ batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded }, opts);
+        p = Traits::empty({ batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded }, opts);
     }
 
     if (zero_tensors) {
@@ -724,38 +755,38 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
     }
 
     Flash_fwd_params params;
-    set_params_fprop(params,
-                     batch_size,
-                     max_seqlen_q, max_seqlen_k,
-                     seqlen_q_rounded, seqlen_k_rounded,
-                     num_heads, num_heads_k,
-                     head_size, head_size_rounded,
-                     q_padded, k_padded, v_padded, out,
-                     cu_seqlens_q_d,
-                     cu_seqlens_k.data_ptr(),
-                     seqused_k.has_value() ? seqused_k.value().data_ptr() : nullptr,
-                     return_softmax ? p.data_ptr() : nullptr,
-                     softmax_lse.data_ptr(),
-                     p_dropout,
-                     softmax_scale,
-                     window_size_left,
-                     window_size_right,
-                     softcap,
-                     seqlenq_ngroups_swapped,
-                     /*unpadded_lse*/true);
+    set_params_fprop<TensorType>(params,
+                                 batch_size,
+                                 max_seqlen_q, max_seqlen_k,
+                                 seqlen_q_rounded, seqlen_k_rounded,
+                                 num_heads, num_heads_k,
+                                 head_size, head_size_rounded,
+                                 q_padded, k_padded, v_padded, out,
+                                 cu_seqlens_q_d,
+                                 cu_seqlens_k.data_ptr(),
+                                 seqused_k.has_value() ? seqused_k.value().data_ptr() : nullptr,
+                                 return_softmax ? p.data_ptr() : nullptr,
+                                 softmax_lse.data_ptr(),
+                                 p_dropout,
+                                 softmax_scale,
+                                 window_size_left,
+                                 window_size_right,
+                                 softcap,
+                                 seqlenq_ngroups_swapped,
+                                 /*unpadded_lse*/true);
     params.total_q = total_q;
     if (paged_KV) {
-        params.block_table = block_table.data_ptr<int>();
+        params.block_table = block_table.template data_ptr<int>();
         params.block_table_batch_stride = block_table.stride(0);
         params.k_batch_stride = k_padded.stride(0);
         params.v_batch_stride = v_padded.stride(0);
     }
     params.page_block_size = page_block_size;
     // Keep references to these tensors to extend their lifetime
-    at::Tensor softmax_lse_accum, out_accum;
+    TensorType softmax_lse_accum, out_accum;
     if (seqlenq_ngroups_swapped) {
         // Only apply split-k for decoding
-        std::tie(softmax_lse_accum, out_accum) = set_params_splitkv(params, batch_size, num_heads,
+        std::tie(softmax_lse_accum, out_accum) = set_params_splitkv<TensorType>(params, batch_size, num_heads,
                            head_size, max_seqlen_k, max_seqlen_q,
                            head_size_rounded, p_dropout, /*num_splits*/0, dprops, opts);
     }
@@ -764,9 +795,10 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
     // Previously: Used separate tensors for philox_seed and philox_offset, sometimes on CPU, sometimes on CUDA
     // FlashAttention change: Now uses a single uint64_t[2] tensor on device containing both seed and offset
     // Implementation: Renamed "seed" → "rng_state" (contains both seed+offset) and "offset" → "_unused"
-    auto rng_state = at::empty({2}, at::dtype(c10::kUInt64).device(at::kCUDA));
-    auto _unused = at::empty({}, at::dtype(c10::kUInt64).device(at::kCUDA));
+    auto rng_state = Traits::empty({2}, c10::dtype(c10::kUInt64).device(c10::kCUDA));
+    auto _unused = Traits::empty({}, c10::dtype(c10::kUInt64).device(c10::kCUDA));
     if (p_dropout > 0.0)  {
+        // TODO: Serhat convert this generator to our shim version
         auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(std::nullopt, at::cuda::detail::getDefaultCUDAGenerator());
         // number of times random will be generated per thread, to offset philox counter in thc random
         // state
@@ -774,16 +806,18 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
         int64_t counter_offset = params.b * params.h * 32;
         // See Note [Acquire lock when using random generators]
         std::lock_guard<std::mutex> lock(gen->mutex_);
+
+        // TODO: move this PhiloxCudaState out of at namespace
         at::PhiloxCudaState philox_state = gen->philox_cuda_state(counter_offset);
-        rng_state = at::empty({2}, at::TensorOptions().dtype(c10::kUInt64).device(at::kCUDA));
+        rng_state = Traits::empty({2}, c10::TensorOptions().dtype(c10::kUInt64).device(c10::kCUDA));
         params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
         params.philox_args = philox_state;
     }
 
-    set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
+    set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
     if (max_seqlen_k > 0) {
-        auto stream = at::cuda::getCurrentCUDAStream().stream();
+        auto stream = c10::cuda::getCurrentCUDAStream().stream();
         run_mha_fwd(params, stream, paged_KV);
     } else {
         // If seqlen_k == 0, then we have an empty tensor. We need to set the output to 0.
@@ -802,6 +836,31 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
     return {out, q_padded, k_padded, v_padded, softmax_lse, rng_state, _unused, p};
 }
 
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+               const at::Tensor &k,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+               const at::Tensor &v,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+               std::optional<at::Tensor> &out_, // total_q x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
+               const at::Tensor &cu_seqlens_q,  // b+1
+               const at::Tensor &cu_seqlens_k,  // b+1
+               std::optional<at::Tensor> &seqused_k, // b. If given, only this many elements of each batch element's keys are used.
+               std::optional<at::Tensor> &block_table_, // batch_size x max_num_blocks_per_seq
+               std::optional<at::Tensor> &alibi_slopes_, // num_heads or b x num_heads
+               int max_seqlen_q,
+               const int max_seqlen_k,
+               const float p_dropout,
+               const float softmax_scale,
+               const bool zero_tensors,
+               bool is_causal,
+               int window_size_left,
+               int window_size_right,
+               const float softcap,
+               const bool return_softmax,
+               std::optional<at::Generator> gen_) {
+    return mha_varlen_fwd_impl<at::Tensor>(q,k,v,out_,cu_seqlens_q,cu_seqlens_k, seqused_k,block_table_,alibi_slopes_,max_seqlen_q,max_seqlen_k, p_dropout, softmax_scale, zero_tensors, is_causal, window_size_left,
+    window_size_right,softcap, return_softmax, gen_);
+}
+
 void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     FP16_SWITCH(!params.is_bf16, [&] {
         HEADDIM_SWITCH(params.d, [&] {
@@ -812,17 +871,18 @@ void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     });
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
-mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_size_og
-        const at::Tensor &q,   // batch_size x seqlen_q x num_heads x head_size
-        const at::Tensor &k,   // batch_size x seqlen_k x num_heads_k x head_size
-        const at::Tensor &v,   // batch_size x seqlen_k x num_heads_k x head_size
-        const at::Tensor &out,   // batch_size x seqlen_q x num_heads x head_size
-        const at::Tensor &softmax_lse,     // b x h x seqlen_q
-        std::optional<at::Tensor> &dq_,   // batch_size x seqlen_q x num_heads x head_size
-        std::optional<at::Tensor> &dk_,   // batch_size x seqlen_k x num_heads_k x head_size
-        std::optional<at::Tensor> &dv_,   // batch_size x seqlen_k x num_heads_k x head_size
-        std::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
+template<typename TensorType>
+std::tuple<TensorType, TensorType, TensorType, TensorType>
+mha_bwd_impl(const TensorType &dout,  // batch_size x seqlen_q x num_heads, x head_size_og
+        const TensorType &q,   // batch_size x seqlen_q x num_heads x head_size
+        const TensorType &k,   // batch_size x seqlen_k x num_heads_k x head_size
+        const TensorType &v,   // batch_size x seqlen_k x num_heads_k x head_size
+        const TensorType &out,   // batch_size x seqlen_q x num_heads x head_size
+        const TensorType &softmax_lse,     // b x h x seqlen_q
+        std::optional<TensorType> &dq_,   // batch_size x seqlen_q x num_heads x head_size
+        std::optional<TensorType> &dk_,   // batch_size x seqlen_k x num_heads_k x head_size
+        std::optional<TensorType> &dv_,   // batch_size x seqlen_k x num_heads_k x head_size
+        std::optional<TensorType> &alibi_slopes_, // num_heads or batch_size x num_heads
         const float p_dropout,         // probability to drop
         const float softmax_scale,
         const bool is_causal,
@@ -830,14 +890,17 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
         int window_size_right,
         const float softcap,
         const bool deterministic,
-        const at::Tensor philox_seed,
-        const at::Tensor philox_offset) {
+        const TensorType philox_seed,
+        const TensorType philox_offset) {
 
     #ifdef FLASHATTENTION_DISABLE_BACKWARD
         TORCH_CHECK(false, "This flash attention build does not support backward.");
     #endif
+
+    using Traits = TensorTraits<TensorType>;
+
     if (is_causal) { window_size_right = 0; }
-    auto dprops = at::cuda::getCurrentDeviceProperties();
+    auto dprops = Traits::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
@@ -849,12 +912,12 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
     // TORCH_CHECK(is_sm90 || is_sm8x || is_sm75, "FlashAttention only supports Turing GPUs or newer.");
 
     bool is_dropout = p_dropout > 0.0;
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    auto stream = c10::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
+    TORCH_CHECK(q_dtype == c10::kHalf || q_dtype == c10::kBFloat16,
                 "FlashAttention only support fp16 and bf16 data type");
-    if (q_dtype == at::kBFloat16) {
+    if (q_dtype == c10::kBFloat16) {
         TORCH_CHECK(is_sm120_or_sm121 || is_sm10x || is_sm90 || is_sm8x, "bfloat16 is only supported on Ampere GPUs or newer");
     }
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
@@ -905,7 +968,7 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
     CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(dout, batch_size, seqlen_q, num_heads, head_size_og);
 
-    at::Tensor dq, dk, dv;
+    TensorType dq, dk, dv;
     if (dq_.has_value()) {
         dq = dq_.value();
         TORCH_CHECK(dq.dtype() == q_dtype, "dq must have the same dtype as q");
@@ -913,7 +976,7 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
         TORCH_CHECK(dq.stride(-1) == 1, "dq must have contiguous last dimension");
         CHECK_SHAPE(dq, batch_size, seqlen_q, num_heads, head_size);
     } else {
-        dq = at::empty_like(q);
+        dq = Traits::empty_like(q);
     }
     if (dk_.has_value()) {
         dk = dk_.value();
@@ -931,7 +994,7 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
         TORCH_CHECK(dv.stride(-1) == 1, "dv must have contiguous last dimension");
         CHECK_SHAPE(dv, batch_size, seqlen_k, num_heads_k, head_size);
     } else {
-        dv = at::empty_like(v);
+        dv = Traits::empty_like(v);
     }
 
     // bool loop = seqlen_k > blocksize_c;
@@ -940,27 +1003,27 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
+    c10::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
 
     auto opts = q.options();
-    auto softmax_d = at::empty({batch_size, num_heads, seqlen_q_rounded}, opts.dtype(at::kFloat));
-    at::Tensor dq_accum;
-    at::Tensor dk_accum, dv_accum;
+    auto softmax_d = Traits::empty({batch_size, num_heads, seqlen_q_rounded}, opts.dtype(c10::kFloat));
+    TensorType dq_accum;
+    TensorType dk_accum, dv_accum;
     if (loop) {
         if (!deterministic) {
-            dq_accum = at::empty({batch_size, seqlen_q_rounded, num_heads, head_size_rounded}, opts.dtype(at::kFloat));
+            dq_accum = Traits::empty({batch_size, seqlen_q_rounded, num_heads, head_size_rounded}, opts.dtype(c10::kFloat));
         } else {
             const int nsplits = (dprops->multiProcessorCount + batch_size * num_heads - 1) / (batch_size * num_heads);
-            dq_accum = at::zeros({nsplits, batch_size, seqlen_q_rounded, num_heads, head_size_rounded}, opts.dtype(at::kFloat));
+            dq_accum = Traits::zeros({nsplits, batch_size, seqlen_q_rounded, num_heads, head_size_rounded}, opts.dtype(c10::kFloat));
         }
         // dk_accum = torch::empty({batch_size, num_heads_k, seqlen_k_rounded, head_size_rounded}, opts.dtype(at::kFloat));
         // dv_accum = torch::empty({batch_size, num_heads_k, seqlen_k_rounded, head_size_rounded}, opts.dtype(at::kFloat));
     }
 
-    at::Tensor dk_expanded, dv_expanded;
+    TensorType dk_expanded, dv_expanded;
     if (num_heads_k != num_heads) {  // MQA / GQA
-        dk_expanded = at::empty({batch_size, seqlen_k, num_heads, head_size}, opts);
-        dv_expanded = at::empty({batch_size, seqlen_k, num_heads, head_size}, opts);
+        dk_expanded = Traits::empty({batch_size, seqlen_k, num_heads, head_size}, opts);
+        dv_expanded = Traits::empty({batch_size, seqlen_k, num_heads, head_size}, opts);
     } else {
         dk_expanded = dk;
         dv_expanded = dv;
@@ -968,42 +1031,43 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
 
     Flash_bwd_params params;
 
-    set_params_dgrad(params,
-                     batch_size,
-                     seqlen_q, seqlen_k,
-                     seqlen_q_rounded, seqlen_k_rounded,
-                     num_heads, num_heads_k,
-                     head_size, head_size_rounded,
-                     q, k, v, out,
-                     dout, dq, dk_expanded, dv_expanded,
-                     nullptr,
-                     nullptr,
-                     loop ? dq_accum.data_ptr() : nullptr,
-                     // loop ? dk_accum.data_ptr() : nullptr,
-                     // loop ? dv_accum.data_ptr() : nullptr,
-                     nullptr,
-                     nullptr,
-                     softmax_lse.data_ptr(),
-                     softmax_d.data_ptr(),
-                     p_dropout,
-                     softmax_scale,
-                     window_size_left,
-                     window_size_right,
-                     softcap,
-                     deterministic,
-                     /*unpadded_lse*/false);
+    set_params_dgrad<TensorType>(params,
+                                 batch_size,
+                                 seqlen_q, seqlen_k,
+                                 seqlen_q_rounded, seqlen_k_rounded,
+                                 num_heads, num_heads_k,
+                                 head_size, head_size_rounded,
+                                 q, k, v, out,
+                                 dout, dq, dk_expanded, dv_expanded,
+                                 nullptr,
+                                 nullptr,
+                                 loop ? dq_accum.data_ptr() : nullptr,
+                                 // loop ? dk_accum.data_ptr() : nullptr,
+                                 // loop ? dv_accum.data_ptr() : nullptr,
+                                 nullptr,
+                                 nullptr,
+                                 softmax_lse.data_ptr(),
+                                 softmax_d.data_ptr(),
+                                 p_dropout,
+                                 softmax_scale,
+                                 window_size_left,
+                                 window_size_right,
+                                 softcap,
+                                 deterministic,
+                                 /*unpadded_lse*/false);
     params.dq_accum_split_stride = !deterministic ? 0 : dq_accum.stride(0);
 
     auto launch = &run_mha_bwd;
 
+    // todo: convert this to shim version.
     at::PhiloxCudaState philox_args;
 
     if (is_dropout) {
-        params.rng_state = philox_seed.data_ptr<uint64_t>();
+        params.rng_state = philox_seed.template data_ptr<uint64_t>();
     }
     params.philox_args = philox_args;
 
-    set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
+    set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
     if (seqlen_q > 0) {
         launch(params, stream);
@@ -1016,25 +1080,50 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
 
     // For MQA/GQA we need to sum dK and dV across the groups
     if (num_heads_k != num_heads) {
-        at::sum_out(dk, at::reshape(dk_expanded, {batch_size, seqlen_k, num_heads_k, num_heads / num_heads_k, head_size}), {3});
-        at::sum_out(dv, at::reshape(dv_expanded, {batch_size, seqlen_k, num_heads_k, num_heads / num_heads_k, head_size}), {3});
+        Traits::sum_out(dk, Traits::reshape(dk_expanded, {batch_size, seqlen_k, num_heads_k, num_heads / num_heads_k, head_size}), {3});
+        Traits::sum_out(dv, Traits::reshape(dv_expanded, {batch_size, seqlen_k, num_heads_k, num_heads / num_heads_k, head_size}), {3});
     }
     return { dq, dk, dv, softmax_d };
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
-mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
-               const at::Tensor &q,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-               const at::Tensor &k,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
-               const at::Tensor &v,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
-               const at::Tensor &out,   // total_q x num_heads x head_size
-               const at::Tensor &softmax_lse, // h x total_q, softmax logsumexp
-               std::optional<at::Tensor> &dq_,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-               std::optional<at::Tensor> &dk_,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
-               std::optional<at::Tensor> &dv_,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
-               const at::Tensor &cu_seqlens_q,  // b+1
-               const at::Tensor &cu_seqlens_k,  // b+1
-               std::optional<at::Tensor> &alibi_slopes_, // num_heads or b x num_heads
+mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_size_og
+        const at::Tensor &q,   // batch_size x seqlen_q x num_heads x head_size
+        const at::Tensor &k,   // batch_size x seqlen_k x num_heads_k x head_size
+        const at::Tensor &v,   // batch_size x seqlen_k x num_heads_k x head_size
+        const at::Tensor &out,   // batch_size x seqlen_q x num_heads x head_size
+        const at::Tensor &softmax_lse,     // b x h x seqlen_q
+        std::optional<at::Tensor> &dq_,   // batch_size x seqlen_q x num_heads x head_size
+        std::optional<at::Tensor> &dk_,   // batch_size x seqlen_k x num_heads_k x head_size
+        std::optional<at::Tensor> &dv_,   // batch_size x seqlen_k x num_heads_k x head_size
+        std::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
+        const float p_dropout,         // probability to drop
+        const float softmax_scale,
+        const bool is_causal,
+        int window_size_left,
+        int window_size_right,
+        const float softcap,
+        const bool deterministic,
+        const at::Tensor philox_seed,
+        const at::Tensor philox_offset) {
+    return mha_bwd_impl<at::Tensor>(dout,q,k,v,out,softmax_lse,dq_,dk_,dv_,alibi_slopes_,p_dropout,softmax_scale,is_causal,
+    window_size_left,window_size_right,softcap,deterministic,philox_seed,philox_offset);
+}
+
+template<typename TensorType>
+std::tuple<TensorType, TensorType, TensorType, TensorType>
+mha_varlen_bwd_impl(const TensorType &dout,  // total_q x num_heads, x head_size
+               const TensorType &q,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+               const TensorType &k,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               const TensorType &v,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               const TensorType &out,   // total_q x num_heads x head_size
+               const TensorType &softmax_lse, // h x total_q, softmax logsumexp
+               std::optional<TensorType> &dq_,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+               std::optional<TensorType> &dk_,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               std::optional<TensorType> &dv_,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               const TensorType &cu_seqlens_q,  // b+1
+               const TensorType &cu_seqlens_k,  // b+1
+               std::optional<TensorType> &alibi_slopes_, // num_heads or b x num_heads
                const int max_seqlen_q,
                const int max_seqlen_k,          // max sequence length to choose the kernel
                const float p_dropout,         // probability to drop
@@ -1045,16 +1134,17 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
                int window_size_right,
                const float softcap,
                const bool deterministic,
-               const at::Tensor philox_seed,
-               const at::Tensor philox_offset)
-{
+               const TensorType philox_seed,
+               const TensorType philox_offset){
 
     #ifdef FLASHATTENTION_DISABLE_BACKWARD
         TORCH_CHECK(false, "This flash attention build does not support backward.");
     #endif
 
+    using Traits = TensorTraits<TensorType>;
+
     if (is_causal) { window_size_right = 0; }
-    auto dprops = at::cuda::getCurrentDeviceProperties();
+    auto dprops = Traits::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
@@ -1065,7 +1155,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     // We will support Turing in the near future
     // TORCH_CHECK(is_sm90 || is_sm8x || is_sm75, "FlashAttention only supports Turing GPUs or newer.");
     bool is_dropout = p_dropout > 0.0;
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    auto stream = c10::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
     TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
@@ -1077,8 +1167,8 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
     TORCH_CHECK(out.dtype() == q_dtype, "query and out must have the same dtype");
     TORCH_CHECK(dout.dtype() == q_dtype, "query and dout must have the same dtype");
-    TORCH_CHECK(cu_seqlens_q.dtype() == at::kInt, "cu_seqlens_q must have dtype int32");
-    TORCH_CHECK(cu_seqlens_k.dtype() == at::kInt, "cu_seqlens_k must have dtype int32");
+    TORCH_CHECK(cu_seqlens_q.dtype() == c10::kInt, "cu_seqlens_q must have dtype int32");
+    TORCH_CHECK(cu_seqlens_k.dtype() == c10::kInt, "cu_seqlens_k must have dtype int32");
 
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
     CHECK_DEVICE(out); CHECK_DEVICE(dout); CHECK_DEVICE(softmax_lse);
@@ -1128,7 +1218,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     CHECK_SHAPE(cu_seqlens_q, batch_size + 1);
     CHECK_SHAPE(cu_seqlens_k, batch_size + 1);
 
-    at::Tensor dq, dk, dv;
+    TensorType dq, dk, dv;
     if (dq_.has_value()) {
         dq = dq_.value();
         TORCH_CHECK(dq.dtype() == q_dtype, "dq must have the same dtype as q");
@@ -1136,7 +1226,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
         TORCH_CHECK(dq.stride(-1) == 1, "dq must have contiguous last dimension");
         CHECK_SHAPE(dq, total_q, num_heads, head_size);
     } else {
-        dq = at::empty_like(q);
+        dq = Traits::empty_like(q);
     }
     if (dk_.has_value()) {
         dk = dk_.value();
@@ -1145,7 +1235,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
         TORCH_CHECK(dk.stride(-1) == 1, "dk must have contiguous last dimension");
         CHECK_SHAPE(dk, total_k, num_heads_k, head_size);
     } else {
-        dk = at::empty_like(k);
+        dk = Traits::empty_like(k);
     }
     if (dv_.has_value()) {
         dv = dv_.value();
@@ -1154,7 +1244,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
         TORCH_CHECK(dv.stride(-1) == 1, "dv must have contiguous last dimension");
         CHECK_SHAPE(dv, total_k, num_heads_k, head_size);
     } else {
-        dv = at::empty_like(v);
+        dv = Traits::empty_like(v);
     }
 
     // bool loop = max_seqlen_k > blocksize_c;
@@ -1163,11 +1253,11 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
+    c10::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
 
     auto opts = q.options();
-    auto softmax_d = at::empty({num_heads, total_q + 128 * batch_size}, opts.dtype(at::kFloat));
-    at::Tensor dq_accum;
+    auto softmax_d = Traits::empty({num_heads, total_q + 128 * batch_size}, opts.dtype(c10::kFloat));
+    TensorType dq_accum;
     if (loop) {
         // We don't want to allocate dq_accum of size (batch, seqlen_q_rounded, num_heads, head_size_rounded)
         // because that would be too large if there is a very long sequence and the rest of the sequences are short.
@@ -1179,17 +1269,17 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
         // allowed to do. So we won't have to do any bound checking, and performance should stay the same.
         // Same holds for softmax_d, since LSE is stored in unpadded format.
         if (!deterministic) {
-            dq_accum = at::empty({total_q + 128 * batch_size, num_heads, head_size_rounded}, opts.dtype(at::kFloat));
+            dq_accum = Traits::empty({total_q + 128 * batch_size, num_heads, head_size_rounded}, opts.dtype(c10::kFloat));
         } else {
             const int nsplits = (dprops->multiProcessorCount + batch_size * num_heads - 1) / (batch_size * num_heads);
-            dq_accum = at::zeros({nsplits, total_q + 128 * batch_size, num_heads, head_size_rounded}, opts.dtype(at::kFloat));
+            dq_accum = Traits::zeros({nsplits, total_q + 128 * batch_size, num_heads, head_size_rounded}, opts.dtype(c10::kFloat));
         }
     }
 
-    at::Tensor dk_expanded, dv_expanded;
+    TensorType dk_expanded, dv_expanded;
     if (num_heads_k != num_heads) {  // MQA / GQA
-        dk_expanded = at::empty({total_k, num_heads, head_size}, opts);
-        dv_expanded = at::empty({total_k, num_heads, head_size}, opts);
+        dk_expanded = Traits::empty({total_k, num_heads, head_size}, opts);
+        dv_expanded = Traits::empty({total_k, num_heads, head_size}, opts);
     } else {
         dk_expanded = dk;
         dv_expanded = dv;
@@ -1204,7 +1294,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
 
     Flash_bwd_params params;
 
-    set_params_dgrad(params,
+    set_params_dgrad<TensorType>(params,
                      batch_size,
                      max_seqlen_q, max_seqlen_k,
                      seqlen_q_rounded, seqlen_k_rounded,
@@ -1231,13 +1321,14 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
 
     auto launch = &run_mha_bwd;
 
+    // todo
     at::PhiloxCudaState philox_args;
     if (is_dropout) {
-        params.rng_state = philox_seed.data_ptr<uint64_t>();
+        params.rng_state = philox_seed.template data_ptr<uint64_t>();
     }
     params.philox_args = philox_args;
 
-    set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
+    set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
     if (max_seqlen_q > 0) {
         launch(params, stream);
@@ -1250,26 +1341,57 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
 
     // For MQA/GQA we need to sum dK and dV across the groups
     if (num_heads_k != num_heads) {
-        at::sum_out(dk, at::reshape(dk_expanded, {total_k, num_heads_k, num_heads / num_heads_k, head_size}), {2});
-        at::sum_out(dv, at::reshape(dv_expanded, {total_k, num_heads_k, num_heads / num_heads_k, head_size}), {2});
+        Traits::sum_out(dk, Traits::reshape(dk_expanded, {total_k, num_heads_k, num_heads / num_heads_k, head_size}), {2});
+        Traits::sum_out(dv, Traits::reshape(dv_expanded, {total_k, num_heads_k, num_heads / num_heads_k, head_size}), {2});
     }
 
     return { dq, dk, dv, softmax_d };
 }
 
-std::tuple<at::Tensor, at::Tensor>
-mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_heads x head_size
-                const at::Tensor &kcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-                const at::Tensor &vcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-                std::optional<const at::Tensor> &k_, // batch_size x seqlen_knew x num_heads_k x head_size
-                std::optional<const at::Tensor> &v_, // batch_size x seqlen_knew x num_heads_k x head_size
-                std::optional<const at::Tensor> &seqlens_k_, // batch_size
-                std::optional<const at::Tensor> &rotary_cos_, // seqlen_ro x (rotary_dim / 2)
-                std::optional<const at::Tensor> &rotary_sin_, // seqlen_ro x (rotary_dim / 2)
-                std::optional<const at::Tensor> &cache_batch_idx_, // indices to index into the KV cache
-                std::optional<at::Tensor> &block_table_, // batch_size x max_num_blocks_per_seq
-                std::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
-                std::optional<at::Tensor> &out_,             // batch_size x seqlen_q x num_heads x head_size
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
+               const at::Tensor &q,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+               const at::Tensor &k,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               const at::Tensor &v,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               const at::Tensor &out,   // total_q x num_heads x head_size
+               const at::Tensor &softmax_lse, // h x total_q, softmax logsumexp
+               std::optional<at::Tensor> &dq_,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+               std::optional<at::Tensor> &dk_,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               std::optional<at::Tensor> &dv_,   // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
+               const at::Tensor &cu_seqlens_q,  // b+1
+               const at::Tensor &cu_seqlens_k,  // b+1
+               std::optional<at::Tensor> &alibi_slopes_, // num_heads or b x num_heads
+               const int max_seqlen_q,
+               const int max_seqlen_k,          // max sequence length to choose the kernel
+               const float p_dropout,         // probability to drop
+               const float softmax_scale,
+               const bool zero_tensors,
+               const bool is_causal,
+               int window_size_left,
+               int window_size_right,
+               const float softcap,
+               const bool deterministic,
+               const at::Tensor philox_seed,
+               const at::Tensor philox_offset) {
+    return mha_varlen_bwd_impl<at::Tensor>(dout,q,k,v,out,softmax_lse,dq_,dk_,dv_,cu_seqlens_q,cu_seqlens_k,
+    alibi_slopes_,max_seqlen_q,max_seqlen_k,p_dropout,softmax_scale,zero_tensors,is_causal,window_size_left,
+    window_size_right,softcap, deterministic,philox_seed,philox_offset);
+}
+
+template <typename TensorType>
+std::tuple<TensorType, TensorType>
+mha_fwd_kvcache(TensorType &q,                 // batch_size x seqlen_q x num_heads x head_size
+                const TensorType &kcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+                const TensorType &vcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+                std::optional<const TensorType> &k_, // batch_size x seqlen_knew x num_heads_k x head_size
+                std::optional<const TensorType> &v_, // batch_size x seqlen_knew x num_heads_k x head_size
+                std::optional<const TensorType> &seqlens_k_, // batch_size
+                std::optional<const TensorType> &rotary_cos_, // seqlen_ro x (rotary_dim / 2)
+                std::optional<const TensorType> &rotary_sin_, // seqlen_ro x (rotary_dim / 2)
+                std::optional<const TensorType> &cache_batch_idx_, // indices to index into the KV cache
+                std::optional<TensorType> &block_table_, // batch_size x max_num_blocks_per_seq
+                std::optional<TensorType> &alibi_slopes_, // num_heads or batch_size x num_heads
+                std::optional<TensorType> &out_,             // batch_size x seqlen_q x num_heads x head_size
                 const float softmax_scale,
                 bool is_causal,
                 int window_size_left,
@@ -1279,7 +1401,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 int num_splits
                 ) {
 
-    auto dprops = at::cuda::getCurrentDeviceProperties();
+    using Traits = TensorTraits<TensorType>;
+    auto dprops = Traits::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
@@ -1290,9 +1413,9 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     // TORCH_CHECK(is_sm90 || is_sm8x || is_sm75, "FlashAttention only supports Turing GPUs or newer.");
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
+    TORCH_CHECK(q_dtype == c10::kHalf || q_dtype == c10::kBFloat16,
                 "FlashAttention only support fp16 and bf16 data type");
-    if (q_dtype == at::kBFloat16) {
+    if (q_dtype == c10::kBFloat16) {
         TORCH_CHECK(is_sm120_or_sm121 || is_sm10x || is_sm90 || is_sm8x, "bfloat16 is only supported on Ampere GPUs or newer");
     }
     TORCH_CHECK(kcache.dtype() == q_dtype, "query and key must have the same dtype");
@@ -1304,13 +1427,13 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     TORCH_CHECK(kcache.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(vcache.stride(-1) == 1, "Input tensor must have contiguous last dimension");
 
-    at::Tensor block_table;
+    TensorType block_table;
     const bool paged_KV = block_table_.has_value();
     if (paged_KV) {
         TORCH_CHECK(!cache_batch_idx_.has_value(), "Paged KVcache does not support cache_batch_idx");
         block_table = block_table_.value();
         CHECK_DEVICE(block_table);
-        TORCH_CHECK(block_table.dtype() == at::kInt, "block_table must have dtype torch.int32");
+        TORCH_CHECK(block_table.dtype() == c10::kInt, "block_table must have dtype torch.int32");
         TORCH_CHECK(block_table.stride(-1) == 1, "block_table must have contiguous last dimension");
     }
 
@@ -1359,11 +1482,11 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         CHECK_SHAPE(block_table, batch_size, max_num_blocks_per_seq);
     }
 
-    at::Tensor q_padded, kcache_padded, vcache_padded;
+    TensorType q_padded, kcache_padded, vcache_padded;
     if (head_size_og % 8 != 0) {
-        q_padded = at::pad(q, {0, 8 - head_size_og % 8});
-        kcache_padded = at::pad(kcache, {0, 8 - head_size_og % 8});
-        vcache_padded = at::pad(vcache, {0, 8 - head_size_og % 8});
+        q_padded = Traits::pad(q, {0, 8 - head_size_og % 8});
+        kcache_padded = Traits::pad(kcache, {0, 8 - head_size_og % 8});
+        vcache_padded = Traits::pad(vcache, {0, 8 - head_size_og % 8});
         // q_padded = at::nn::functional::pad(q, at::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
         // kcache_padded = at::nn::functional::pad(kcache, at::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
         // vcache_padded = at::nn::functional::pad(vcache, at::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
@@ -1373,14 +1496,14 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         vcache_padded = vcache;
     }
 
-    at::Tensor out;
+    TensorType out;
     if (out_.has_value()) {
         out = out_.value();
         TORCH_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
         CHECK_DEVICE(out);
         TORCH_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
         CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_og);
-        if (head_size_og % 8 != 0) { out = at::empty_like(q_padded); }
+        if (head_size_og % 8 != 0) { out = Traits::empty_like(q_padded); }
     } else {
         out = at::empty_like(q_padded);
     }
@@ -1393,14 +1516,14 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
+    c10::cuda::CUDAGuard device_guard{static_cast<signed char>(q.get_device())};
 
     auto opts = q.options();
 
     auto softmax_lse = at::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
 
     Flash_fwd_params params;
-    set_params_fprop(params,
+    set_params_fprop<TensorType>(params,
                      batch_size,
                      seqlen_q, seqlen_k,
                      seqlen_q_rounded, seqlen_k_rounded,
@@ -1419,7 +1542,7 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                      softcap
                      );
 
-    at::Tensor k, v, k_padded, v_padded;
+    TensorType k, v, k_padded, v_padded;
     if (k_.has_value()) {
         TORCH_CHECK(v_.has_value(), "If key is supplied, value must also be passed in");
         TORCH_CHECK(seqlens_k_.has_value(), "If key is supplied, seqlens_k must also be passed in");
@@ -1435,8 +1558,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         CHECK_SHAPE(k, batch_size, seqlen_knew, num_heads_k, head_size_og);
         CHECK_SHAPE(v, batch_size, seqlen_knew, num_heads_k, head_size_og);
         if (head_size_og % 8 != 0) {
-            k_padded = at::pad(k, {0, 8 - head_size_og % 8});
-            v_padded = at::pad(v, {0, 8 - head_size_og % 8});
+            k_padded = Traits::pad(k, {0, 8 - head_size_og % 8});
+            v_padded = Traits::pad(v, {0, 8 - head_size_og % 8});
             // k_padded = at::nn::functional::pad(k, at::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
             // v_padded = at::nn::functional::pad(v, at::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
         } else {
@@ -1457,7 +1580,7 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
 
     if (seqlens_k_.has_value()) {
         auto seqlens_k = seqlens_k_.value();
-        TORCH_CHECK(seqlens_k.dtype() == at::kInt, "seqlens_k must have dtype int32");
+        TORCH_CHECK(seqlens_k.dtype() == c10::kInt, "seqlens_k must have dtype int32");
         CHECK_DEVICE(seqlens_k);
         CHECK_CONTIGUOUS(seqlens_k);
         CHECK_SHAPE(seqlens_k, batch_size);
@@ -1495,25 +1618,25 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         auto cache_batch_idx = cache_batch_idx_.value();
         CHECK_DEVICE(cache_batch_idx);
         CHECK_CONTIGUOUS(cache_batch_idx);
-        TORCH_CHECK(cache_batch_idx.scalar_type() == at::kInt, "cache_batch_idx must have dtype int32");
+        TORCH_CHECK(cache_batch_idx.scalar_type() == c10::kInt, "cache_batch_idx must have dtype int32");
         params.cache_batch_idx = reinterpret_cast<int *>(cache_batch_idx.data_ptr());
     }
 
     // Keep references to these tensors to extend their lifetime
-    auto [softmax_lse_accum, out_accum] = set_params_splitkv(params, batch_size, num_heads,
+    auto [softmax_lse_accum, out_accum] = set_params_splitkv<TensorType>(params, batch_size, num_heads,
                        head_size, seqlen_k, seqlen_q,
                        head_size_rounded, /*dropout*/0.f, num_splits, dprops, opts);
 
     if (paged_KV) {
-        params.block_table = block_table.data_ptr<int>();
+        params.block_table = block_table.template data_ptr<int>();
         params.block_table_batch_stride = block_table.stride(0);
     }
     params.page_block_size = page_block_size;
 
 
-    set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
+    set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    auto stream = c10::cuda::getCurrentCUDAStream().stream();
     // Only split kernel supports appending to KV cache, or indexing to the cache with cache_batch_idx,
     // or paged KV cache
     run_mha_fwd(params, stream, /*force_split_kernel=*/k_.has_value() || cache_batch_idx_.has_value() || paged_KV);
