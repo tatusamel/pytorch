@@ -393,7 +393,8 @@ mha_fwd_impl(const TensorType &q,         // batch_size x seqlen_q x num_heads x
         int window_size_right,
         const float softcap,
         const bool return_softmax,
-        std::optional<at::Generator> gen_) {
+        std::optional<at::Generator> gen_
+        ) {
 
     using Traits = TensorTraits<TensorType>;
     auto dprops = Traits::getCurrentDeviceProperties();
@@ -529,6 +530,7 @@ mha_fwd_impl(const TensorType &q,         // batch_size x seqlen_q x num_heads x
     // See [Note] BC breaking change to flash seed/offset
     auto rng_state = Traits::empty({2}, c10::TensorOptions().dtype(c10::kUInt64).device(c10::kCUDA));
     auto _unused = Traits::empty({}, c10::TensorOptions().dtype(c10::kUInt64).device(c10::kCUDA));
+#ifndef TORCH_STANDALONE
     if (p_dropout > 0.0)  {
         auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(std::nullopt, at::cuda::detail::getDefaultCUDAGenerator());
         // number of times random will be generated per thread, to offset philox counter in thc random
@@ -542,6 +544,7 @@ mha_fwd_impl(const TensorType &q,         // batch_size x seqlen_q x num_heads x
         params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
         params.philox_args = philox_state;
     }
+#endif // TORCH_STANDALONE
 
     set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
@@ -576,7 +579,8 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
         int window_size_right,
         const float softcap,
         const bool return_softmax,
-        std::optional<at::Generator> gen_) {
+        std::optional<at::Generator> gen_
+        ) {
 
     return mha_fwd_impl<at::Tensor>(q, k, v, out_, alibi_slopes_, p_dropout, softmax_scale,
                                     is_causal, window_size_left, window_size_right, softcap,
@@ -797,8 +801,8 @@ mha_varlen_fwd_impl(const TensorType &q,  // total_q x num_heads x head_size, to
     // Implementation: Renamed "seed" → "rng_state" (contains both seed+offset) and "offset" → "_unused"
     auto rng_state = Traits::empty({2}, c10::dtype(c10::kUInt64).device(c10::kCUDA));
     auto _unused = Traits::empty({}, c10::dtype(c10::kUInt64).device(c10::kCUDA));
+#ifndef TORCH_STANDALONE
     if (p_dropout > 0.0)  {
-        // TODO: Serhat convert this generator to our shim version
         auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(std::nullopt, at::cuda::detail::getDefaultCUDAGenerator());
         // number of times random will be generated per thread, to offset philox counter in thc random
         // state
@@ -813,7 +817,7 @@ mha_varlen_fwd_impl(const TensorType &q,  // total_q x num_heads x head_size, to
         params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
         params.philox_args = philox_state;
     }
-
+#endif // TORCH_STANDALONE
     set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
     if (max_seqlen_k > 0) {
@@ -856,7 +860,8 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
                int window_size_right,
                const float softcap,
                const bool return_softmax,
-               std::optional<at::Generator> gen_) {
+               std::optional<at::Generator> gen_
+               ) {
     return mha_varlen_fwd_impl<at::Tensor>(q,k,v,out_,cu_seqlens_q,cu_seqlens_k, seqused_k,block_table_,alibi_slopes_,max_seqlen_q,max_seqlen_k, p_dropout, softmax_scale, zero_tensors, is_causal, window_size_left,
     window_size_right,softcap, return_softmax, gen_);
 }
@@ -985,7 +990,7 @@ mha_bwd_impl(const TensorType &dout,  // batch_size x seqlen_q x num_heads, x he
         TORCH_CHECK(dk.stride(-1) == 1, "dk must have contiguous last dimension");
         CHECK_SHAPE(dk, batch_size, seqlen_k, num_heads_k, head_size);
     } else {
-        dk = at::empty_like(k);
+        dk = Traits::empty_like(k);
     }
     if (dv_.has_value()) {
         dv = dv_.value();
@@ -1059,13 +1064,14 @@ mha_bwd_impl(const TensorType &dout,  // batch_size x seqlen_q x num_heads, x he
 
     auto launch = &run_mha_bwd;
 
-    // todo: convert this to shim version.
+#ifndef TORCH_STANDALONE
     at::PhiloxCudaState philox_args;
 
     if (is_dropout) {
         params.rng_state = philox_seed.template data_ptr<uint64_t>();
     }
     params.philox_args = philox_args;
+#endif // TORCH_STANDALONE
 
     set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
@@ -1158,9 +1164,9 @@ mha_varlen_bwd_impl(const TensorType &dout,  // total_q x num_heads, x head_size
     auto stream = c10::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
+    TORCH_CHECK(q_dtype == c10::kHalf || q_dtype == c10::kBFloat16,
                 "FlashAttention only support fp16 and bf16 data type");
-    if (q_dtype == at::kBFloat16) {
+    if (q_dtype == c10::kBFloat16) {
         TORCH_CHECK(is_sm120_or_sm121 || is_sm10x || is_sm90 || is_sm8x, "bfloat16 is only supported on Ampere GPUs or newer");
     }
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
@@ -1321,13 +1327,13 @@ mha_varlen_bwd_impl(const TensorType &dout,  // total_q x num_heads, x head_size
 
     auto launch = &run_mha_bwd;
 
-    // todo
+#ifndef TORCH_STANDALONE
     at::PhiloxCudaState philox_args;
     if (is_dropout) {
         params.rng_state = philox_seed.template data_ptr<uint64_t>();
     }
     params.philox_args = philox_args;
-
+#endif // TORCH_STANDALONE
     set_params_alibi<TensorType>(params, alibi_slopes_, batch_size, num_heads);
 
     if (max_seqlen_q > 0) {
@@ -1505,7 +1511,7 @@ mha_fwd_kvcache(TensorType &q,                 // batch_size x seqlen_q x num_he
         CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_og);
         if (head_size_og % 8 != 0) { out = Traits::empty_like(q_padded); }
     } else {
-        out = at::empty_like(q_padded);
+        out = Traits::empty_like(q_padded);
     }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
@@ -1520,7 +1526,7 @@ mha_fwd_kvcache(TensorType &q,                 // batch_size x seqlen_q x num_he
 
     auto opts = q.options();
 
-    auto softmax_lse = at::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
+    auto softmax_lse = Traits::empty({batch_size, num_heads, seqlen_q}, opts.dtype(c10::kFloat));
 
     Flash_fwd_params params;
     set_params_fprop<TensorType>(params,

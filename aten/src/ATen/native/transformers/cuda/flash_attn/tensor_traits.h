@@ -38,7 +38,6 @@ struct TensorTraits<at::Tensor> {
 };
 
 // Specialization for torch::standalone::SlimTensor
-//================================================================
 
 template <>
 struct TensorTraits<torch::standalone::SlimTensor> {
@@ -62,7 +61,7 @@ struct TensorTraits<torch::standalone::SlimTensor> {
 
     // todo: implement a shim version of sum_out
     static at::Tensor& sum_out(at::Tensor& out, const at::Tensor& t, c10::IntArrayRef dim, bool keepdim = false, std::optional<c10::ScalarType> dtype = std::nullopt) {
-        return at::sum_out(out, t, dim, keepdim, dtype);
+        TORCH_CHECK(false, "shim version of sum_out is not implemented yet");
     }
 
     static TensorType empty(c10::IntArrayRef size, const c10::TensorOptions& opts) {
@@ -75,7 +74,6 @@ struct TensorTraits<torch::standalone::SlimTensor> {
         );
     }
 
-    // --- CUDA Utilities ---
     static cudaDeviceProp* getCurrentDeviceProperties() {
         static thread_local cudaDeviceProp prop;
         static thread_local bool initialized = false;
