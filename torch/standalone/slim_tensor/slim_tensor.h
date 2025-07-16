@@ -60,16 +60,16 @@ class SlimTensor {
     return sizes_and_strides_.sizes_arrayref();
   }
 
-  int64_t size(size_t dim) const {
-    return sizes_and_strides_.size_at(dim);
+  int64_t size(int64_t dim) const {
+    return sizes_and_strides_.size_at(torch::standalone::maybe_wrap_dim(dim, static_cast<int64_t>(this->dim())));
   }
 
   c10::IntArrayRef strides() const {
     return sizes_and_strides_.strides_arrayref();
   }
 
-  int64_t stride(size_t dim) const {
-    return sizes_and_strides_.stride_at(dim);
+  int64_t stride(int64_t dim) const {
+    return sizes_and_strides_.stride_at(torch::standalone::maybe_wrap_dim(dim, static_cast<int64_t>(this->dim())));
   }
 
   c10::ScalarType dtype() const {
