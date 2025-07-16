@@ -19,7 +19,6 @@ add_executable(test_aoti_standalone
 # Add FlashAttention include directories
 target_include_directories(test_aoti_standalone PRIVATE
   ${TORCH_ROOT}/third_party/flash-attention/csrc/flash_attn/src
-  ${TORCH_ROOT}/aten/src/ATen/native/transformers/cuda/flash_attn
 )
 
 # TODO temporary until we can delete the old gtest polyfills.
