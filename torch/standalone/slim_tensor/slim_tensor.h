@@ -9,6 +9,7 @@
 
 #include <c10/core/MemoryFormat.h>
 #include <c10/core/Scalar.h>
+#include <c10/core/TensorOptions.h>
 #include <c10/core/impl/SizesAndStrides.h>
 #include <torch/csrc/inductor/aoti_standalone/utils.h>
 #include <torch/standalone/reshape_template.h>
@@ -59,16 +60,18 @@ class SlimTensor {
     return sizes_and_strides_.sizes_arrayref();
   }
 
-  int64_t size(size_t dim) const {
-    return sizes_and_strides_.size_at(dim);
+  int64_t size(int64_t dim) const {
+    return sizes_and_strides_.size_at(torch::standalone::maybe_wrap_dim(
+        dim, static_cast<int64_t>(this->dim())));
   }
 
   c10::IntArrayRef strides() const {
     return sizes_and_strides_.strides_arrayref();
   }
 
-  int64_t stride(size_t dim) const {
-    return sizes_and_strides_.stride_at(dim);
+  int64_t stride(int64_t dim) const {
+    return sizes_and_strides_.stride_at(torch::standalone::maybe_wrap_dim(
+        dim, static_cast<int64_t>(this->dim())));
   }
 
   c10::ScalarType dtype() const {
@@ -442,6 +445,11 @@ class SlimTensor {
     return _reshape(*this, proposed_shape);
   }
 
+  SlimTensor& zero_() {
+    fill_(c10::Scalar(0));
+    return *this;
+  }
+
   SlimTensor clone_contiguous() const;
 
  private:
@@ -529,6 +537,21 @@ inline SlimTensor SlimTensor::clone_contiguous() const {
   // copy the data from (potentially non-contiguous) the self tensor
   result.copy_(*this);
   return result;
+}
+inline SlimTensor zeros(c10::IntArrayRef size, const c10::TensorOptions& opts) {
+  SlimTensor result = create_empty_tensor(
+      size,
+      compute_contiguous_strides(size),
+      opts.dtype().toScalarType(),
+      opts.device(),
+      0);
+  result.zero_();
+  return result;
+}
+
+inline SlimTensor empty_like(const SlimTensor& other) {
+  return create_empty_tensor(
+      other.sizes(), other.strides(), other.dtype(), other.device(), 0);
 }
 
 } // namespace torch::standalone

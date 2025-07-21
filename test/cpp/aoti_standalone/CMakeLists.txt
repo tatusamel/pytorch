@@ -3,9 +3,22 @@ set(AOTI_STANDALONE_TEST_ROOT ${TORCH_ROOT}/test/cpp/aoti_standalone)
 
 file(GLOB_RECURSE AOTI_STANDALONE_TEST_SRCS "${AOTI_STANDALONE_TEST_ROOT}/test*.cpp")
 
+# Add FlashAttention CUDA kernel files
+file(GLOB FLASH_ATTN_CUDA_SRCS
+  "${TORCH_ROOT}/third_party/flash-attention/csrc/flash_attn/src/flash_fwd_hdim*_sm80.cu"
+  "${TORCH_ROOT}/third_party/flash-attention/csrc/flash_attn/src/flash_fwd_split_hdim*_sm80.cu"
+)
+
 add_executable(test_aoti_standalone
   ${TORCH_ROOT}/test/cpp/common/main.cpp
   ${AOTI_STANDALONE_TEST_SRCS}
+  ${TORCH_ROOT}/torch/csrc/inductor/aoti_standalone/cuda/flash_attn/flash_api.cpp
+  ${FLASH_ATTN_CUDA_SRCS}
+)
+
+# Add FlashAttention include directories
+target_include_directories(test_aoti_standalone PRIVATE
+  ${TORCH_ROOT}/third_party/flash-attention/csrc/flash_attn/src
 )
 
 # TODO temporary until we can delete the old gtest polyfills.
