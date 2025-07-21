@@ -16,14 +16,13 @@ AOTITorchError aoti_torch_cuda_addmm_out(
     AtenTensorHandle mat2_handle,
     double beta,
     double alpha) {
-    SlimTensor* self = reinterpret_cast<SlimTensor*>(self_handle);
-    SlimTensor* mat1 = reinterpret_cast<SlimTensor*>(mat1_handle);
-    SlimTensor* mat2 = reinterpret_cast<SlimTensor*>(mat2_handle);
-    SlimTensor* out = reinterpret_cast<SlimTensor*>(out_handle);
+  SlimTensor* self = reinterpret_cast<SlimTensor*>(self_handle);
+  SlimTensor* mat1 = reinterpret_cast<SlimTensor*>(mat1_handle);
+  SlimTensor* mat2 = reinterpret_cast<SlimTensor*>(mat2_handle);
+  SlimTensor* out = reinterpret_cast<SlimTensor*>(out_handle);
 
-    torch::standalone::_cuda_addmm_out(*self, *mat1, *mat2, beta, alpha, *out);
-    return AOTI_TORCH_SUCCESS;
-
+  torch::standalone::_cuda_addmm_out(*self, *mat1, *mat2, beta, alpha, *out);
+  return AOTI_TORCH_SUCCESS;
 }
 
 #ifdef __cplusplus

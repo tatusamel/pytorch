@@ -220,7 +220,7 @@ void broadcast_copy(SlimTensor& dst, const SlimTensor& src) {
   if (src.numel() == 1) {
     // Create a copy of the scalar tensor to extract its value
     SlimTensor src_cpu = src.to(c10::Device(c10::kCPU));
-    
+
     // Extract the scalar value based on dtype
     c10::Scalar scalar_value;
     switch (src.dtype()) {
@@ -257,11 +257,11 @@ void broadcast_copy(SlimTensor& dst, const SlimTensor& src) {
       default:
         TORCH_CHECK(false, "Unsupported dtype for broadcast_copy scalar");
     }
-    
+
     dst.fill_(scalar_value);
     return;
   }
-  
+
   // Case C: broadcasting needed
   launch_broadcast_copy(dst, src);
 }
