@@ -206,66 +206,6 @@ void cublas_gemm_wrapper<c10::Half>(
 
 namespace torch::standalone {
 
-void broadcast_copy(SlimTensor& dst, const SlimTensor& src) {
-  TORCH_CHECK(src.device() == dst.device(),
-              "broadcast_copy: tensors must be on the same device");
-
-  // Case A: identical shape
-  if (src.sizes() == dst.sizes()) {
-    dst.copy_(src);
-    return;
-  }
-
-  // Case B: scalar
-  if (src.numel() == 1) {
-    // Create a copy of the scalar tensor to extract its value
-    SlimTensor src_cpu = src.to(c10::Device(c10::kCPU));
-
-    // Extract the scalar value based on dtype
-    c10::Scalar scalar_value;
-    switch (src.dtype()) {
-      case c10::kFloat: {
-        float* data_ptr = static_cast<float*>(src_cpu.data_ptr());
-        scalar_value = c10::Scalar(*data_ptr);
-        break;
-      }
-      case c10::kDouble: {
-        double* data_ptr = static_cast<double*>(src_cpu.data_ptr());
-        scalar_value = c10::Scalar(*data_ptr);
-        break;
-      }
-      case c10::kHalf: {
-        c10::Half* data_ptr = static_cast<c10::Half*>(src_cpu.data_ptr());
-        scalar_value = c10::Scalar(static_cast<float>(*data_ptr));
-        break;
-      }
-      case c10::kInt: {
-        int32_t* data_ptr = static_cast<int32_t*>(src_cpu.data_ptr());
-        scalar_value = c10::Scalar(*data_ptr);
-        break;
-      }
-      case c10::kLong: {
-        int64_t* data_ptr = static_cast<int64_t*>(src_cpu.data_ptr());
-        scalar_value = c10::Scalar(*data_ptr);
-        break;
-      }
-      case c10::kBool: {
-        bool* data_ptr = static_cast<bool*>(src_cpu.data_ptr());
-        scalar_value = c10::Scalar(*data_ptr);
-        break;
-      }
-      default:
-        TORCH_CHECK(false, "Unsupported dtype for broadcast_copy scalar");
-    }
-
-    dst.fill_(scalar_value);
-    return;
-  }
-
-  // Case C: broadcasting needed
-  launch_broadcast_copy(dst, src);
-}
-
 void _cuda_addmm_out(
     const SlimTensor& input,
     const SlimTensor& mat1,
