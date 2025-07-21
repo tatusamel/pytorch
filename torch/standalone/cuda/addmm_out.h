@@ -12,7 +12,6 @@ void _cuda_addmm_out(
     const SlimTensor& mat2,
     const c10::Scalar& beta,
     const c10::Scalar& alpha,
-    SlimTensor& out
-);
+    SlimTensor& out);
 
 } // namespace torch::standalone

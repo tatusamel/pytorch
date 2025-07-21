@@ -9,28 +9,10 @@
 #include <torch/csrc/inductor/aoti_standalone/cuda/flash_attn.h>
 #include <torch/csrc/inductor/aoti_standalone/factory.h>
 #include <torch/standalone/slim_tensor/slim_tensor.h>
+#include "test_utils.h"
 
 using ::testing::ElementsAreArray;
 using torch::standalone::SlimTensor;
-
-// Helper to convert a SlimTensor (potentially on CUDA) to a CPU at::Tensor for
-// easy comparison. It clones the data to ensure the at::Tensor owns its memory.
-at::Tensor slim_to_cpu_aten(SlimTensor* slim_tensor) {
-  if (!slim_tensor || slim_tensor->numel() == 0) {
-    // Return an empty tensor if the slim tensor is null or has no elements.
-    return at::empty(
-        {0},
-        at::TensorOptions().dtype(
-            slim_tensor ? slim_tensor->dtype() : at::kFloat));
-  }
-  SlimTensor slim_cpu = slim_tensor->to(at::kCPU);
-  return at::from_blob(
-             slim_cpu.data_ptr(),
-             slim_cpu.sizes(),
-             slim_cpu.strides(),
-             slim_cpu.dtype())
-      .clone(); // Crucial: clone to own the data
-}
 
 // Define a test fixture for convenience.
 // This sets up the CUDA device and tensor options for all tests in this suite.
