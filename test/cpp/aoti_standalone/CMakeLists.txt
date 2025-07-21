@@ -14,6 +14,7 @@ add_executable(test_aoti_standalone
   ${AOTI_STANDALONE_TEST_SRCS}
   ${TORCH_ROOT}/torch/csrc/inductor/aoti_standalone/cuda/flash_attn/flash_api.cpp
   ${FLASH_ATTN_CUDA_SRCS}
+  ${TORCH_ROOT}/torch/standalone/cuda/addmm_out.cu
 )
 
 # Add FlashAttention include directories
@@ -32,6 +33,7 @@ target_link_libraries(test_aoti_standalone PRIVATE
 if(USE_CUDA)
   target_include_directories(test_aoti_standalone PRIVATE ${ATen_CUDA_INCLUDE})
   target_compile_definitions(test_aoti_standalone PRIVATE USE_CUDA)
+  target_link_libraries(test_aoti_standalone PRIVATE CUDA::cublas)
 elseif(USE_ROCM)
     target_include_directories(test_aoti_standalone PRIVATE ${ATen_HIP_INCLUDE})
     target_compile_definitions(test_aoti_standalone PRIVATE USE_ROCM)
